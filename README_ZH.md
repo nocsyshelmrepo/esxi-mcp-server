@@ -1,6 +1,6 @@
 # ESXi MCP Server
 
-一个基于 MCP (Machine Control Protocol) 的 VMware ESXi/vCenter 管理服务器，提供简单的 REST API 接口来管理虚拟机。
+一个基于 MCP (Model Control Protocol) 的 VMware ESXi/vCenter 管理服务器，提供简单的 REST API 接口来管理虚拟机。
 
 ## 功能特性
 
