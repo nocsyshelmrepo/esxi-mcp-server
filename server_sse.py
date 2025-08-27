@@ -1,5 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, HTTPException
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -533,25 +532,6 @@ sse_app = Starlette(
 
 app = FastAPI()
 app.mount("/", sse_app)
-
-API_KEY = "your-secure-api-key"
-API_KEY_X_API_HEADER_NAME = "X-API-Key"
-API_KEY_AUTHORIZATION_HEADER_NAME = "Authorization"
-
-# Dependency to validate the API key
-api_key_header = APIKeyHeader(name=API_KEY_X_API_HEADER_NAME, auto_error=False)
-if api_key_header is None:
-   api_key_auth_header = APIKeyHeader(name=API_KEY_AUTHORIZATION_HEADER_NAME, auto_error=False)
-
-async def validate_api_key(api_key: str = Depends(api_key_header)):
-    if config.api_key and config.api_key != api_key:
-        raise HTTPException(status_code=403, detail="Invalid API Key")
-
-# Health check endpoint
-@app.get("/health", dependencies=[Depends(validate_api_key)])
-def read_root():
-    return {"message": "MCP SSE Server is running"}
-
 
 if __name__ == "__main__":
     #mcp.run(transport="sse")
