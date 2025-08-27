@@ -1,3 +1,12 @@
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security.api_key import APIKeyHeader
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.routing import Route, Mount
+
 import os
 import json
 import logging
@@ -5,11 +14,6 @@ import ssl
 import argparse
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-
-# MCP protocol related imports
-from mcp.server.lowlevel import Server  # MCP server base class
-from mcp.server.sse import SseServerTransport  # SSE transport support
-from mcp import types  # MCP type definitions
 
 # pyVmomi VMware API imports
 from pyVim import connect
@@ -29,6 +33,7 @@ class Config:
     api_key: Optional[str] = None      # API access key for authentication
     log_file: Optional[str] = None     # Log file path (if not specified, output to console)
     log_level: str = "INFO"            # Log level
+
 
 # VMware management class, encapsulating pyVmomi operations for vSphere
 class VMwareManager:
@@ -351,301 +356,65 @@ class VMwareManager:
         logging.info(f"Virtual machine powered off: {name}")
         return f"VM '{name}' powered off."
 
-# ---------------- MCP Server Definition ----------------
+# Initialize FastMCP server
+mcp = FastMCP("VMware ESXI MCP Server", log_level="ERROR",
+              dependencies=[],
+              debug=True,
+              host='0.0.0.0',
+              port=5050)
 
-# Initialize MCP Server object
-mcp_server = Server(name="VMware-MCP-Server", version="0.0.1")
-# Define supported tools (executable operations) and resources (data interfaces)
-# The implementation of tools and resources will call methods in VMwareManager
-# Note: For each operation, perform API key authentication check, and only execute sensitive operations if the authenticated flag is True
-# If not authenticated, an exception is raised
 
-# Tool 1: Authentication (via API Key)
-def tool_authenticate(key: str) -> str:
-    """Validate the API key and enable subsequent operations upon success."""
-    if config.api_key and key == config.api_key:
-        manager.authenticated = True
-        logging.info("API key verification successful, client is authorized")
-        return "Authentication successful."
-    else:
-        logging.warning("API key verification failed")
-        raise Exception("Authentication failed: invalid API key.")
 
-# Tool 2: Create virtual machine
+@mcp.tool()
 def tool_create_vm(name: str, cpu: int, memory: int, datastore: str = None, network: str = None) -> str:
     """Create a new virtual machine."""
-    _check_auth()  # Check access permissions
+
     return manager.create_vm(name, cpu, memory, datastore, network)
 
-# Tool 3: Clone virtual machine
+@mcp.tool()
 def tool_clone_vm(template_name: str, new_name: str) -> str:
     """Clone a virtual machine from a template."""
-    _check_auth()
+
     return manager.clone_vm(template_name, new_name)
 
-# Tool 4: Delete virtual machine
+@mcp.tool()
 def tool_delete_vm(name: str) -> str:
     """Delete the specified virtual machine."""
-    _check_auth()
+
     return manager.delete_vm(name)
 
-# Tool 5: Power on virtual machine
+@mcp.tool()
 def tool_power_on(name: str) -> str:
     """Power on the specified virtual machine."""
-    _check_auth()
+
     return manager.power_on_vm(name)
 
-# Tool 6: Power off virtual machine
+@mcp.tool()
 def tool_power_off(name: str) -> str:
     """Power off the specified virtual machine."""
-    _check_auth()
+
     return manager.power_off_vm(name)
 
-# Tool 7: List all virtual machines
+@mcp.tool()
 def tool_list_vms() -> list:
     """Return a list of all virtual machine names."""
-    _check_auth()
+
     return manager.list_vms()
 
-# Resource 1: Retrieve virtual machine performance data
+@mcp.tool()
 def resource_vm_performance(vm_name: str) -> dict:
     """Retrieve CPU, memory, storage, and network usage for the specified virtual machine."""
-    _check_auth()
+
     return manager.get_vm_performance(vm_name)
 
-# Internal helper: Check API access permissions
-def _check_auth():
-    if config.api_key:
-        # If an API key is configured, require that manager.authenticated is True
-        if not manager.authenticated:
-            raise Exception("Unauthorized: API key required.")
 
-# Register the above functions as tools and resources for the MCP Server
-# Encapsulate using mcp.types.Tool and mcp.types.Resource
-tools = {
-    "authenticate": types.Tool(
-        name="authenticate",
-        description="Authenticate using API key to enable privileged operations",
-        parameters={"key": str},
-        handler=lambda params: tool_authenticate(**params),
-        inputSchema={"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}
-    ),
-    "createVM": types.Tool(
-        name="createVM",
-        description="Create a new virtual machine",
-        parameters={"name": str, "cpu": int, "memory": int, "datastore": Optional[str], "network": Optional[str]},
-        handler=lambda params: tool_create_vm(**params),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "cpu": {"type": "integer"},
-                "memory": {"type": "integer"},
-                "datastore": {"type": "string", "nullable": True},
-                "network": {"type": "string", "nullable": True}
-            },
-            "required": ["name", "cpu", "memory"]
-        }
-    ),
-    "cloneVM": types.Tool(
-        name="cloneVM",
-        description="Clone a virtual machine from a template or existing VM",
-        parameters={"template_name": str, "new_name": str},
-        handler=lambda params: tool_clone_vm(**params),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "template_name": {"type": "string"},
-                "new_name": {"type": "string"}
-            },
-            "required": ["template_name", "new_name"]
-        }
-    ),
-    "deleteVM": types.Tool(
-        name="deleteVM",
-        description="Delete a virtual machine",
-        parameters={"name": str},
-        handler=lambda params: tool_delete_vm(**params),
-        inputSchema={
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"]
-        }
-    ),
-    "powerOn": types.Tool(
-        name="powerOn",
-        description="Power on a virtual machine",
-        parameters={"name": str},
-        handler=lambda params: tool_power_on(**params),
-        inputSchema={
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"]
-        }
-    ),
-    "powerOff": types.Tool(
-        name="powerOff",
-        description="Power off a virtual machine",
-        parameters={"name": str},
-        handler=lambda params: tool_power_off(**params),
-        inputSchema={
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"]
-        }
-    ),
-    "listVMs": types.Tool(
-        name="listVMs",
-        description="List all virtual machines",
-        parameters={},
-        handler=lambda params: tool_list_vms(),
-        inputSchema={"type": "object", "properties": {}}
-    )
-}
-resources = {
-    "vmStats": types.Resource(
-        name="vmStats",
-        uri="vmstats://{vm_name}",
-        description="Get CPU, memory, storage, network usage of a VM",
-        parameters={"vm_name": str},
-        handler=lambda params: resource_vm_performance(**params),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "vm_name": {"type": "string"}
-            },
-            "required": ["vm_name"]
-        }
-    )
-}
 
-# Add tools and resources to the MCP Server object
-for name, tool in tools.items():
-    setattr(mcp_server, f"tool_{name}", tool)
-for name, res in resources.items():
-    setattr(mcp_server, f"resource_{name}", res)
 
-# Set the MCP Server capabilities, declaring that the tools and resources list is available
-mcp_server.capabilities = {
-    "tools": {"listChanged": True},
-    "resources": {"listChanged": True}
-}
 
-# Maintain a global SSE transport instance for sending events during POST request processing
-active_transport: Optional[SseServerTransport] = None
 
-# SSE initialization request handler (HTTP GET /sse)
-async def sse_endpoint(scope, receive, send):
-    """Handle SSE connection initialization requests. Establish an MCP SSE session."""
-    global active_transport
-    # Construct response headers to establish an event stream
-    headers = [(b"content-type", b"text/event-stream")]
-    # Verify API key: Retrieve from request headers 'Authorization' or 'X-API-Key'
-    headers_dict = {k.lower().decode(): v.decode() for (k, v) in scope.get("headers", [])}
-    provided_key = None
-    if b"authorization" in scope["headers"]:
-        provided_key = headers_dict.get("authorization")
-    elif b"x-api-key" in scope["headers"]:
-        provided_key = headers_dict.get("x-api-key")
-    if config.api_key and provided_key != f"Bearer {config.api_key}" and provided_key != config.api_key:
-        # If the correct API key is not provided, return 401
-        res_status = b"401 UNAUTHORIZED"
-        await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"text/plain")]})
-        await send({"type": "http.response.body", "body": b"Unauthorized"})
-        logging.warning("No valid API key provided, rejecting SSE connection")
-        return
-
-    # Establish SSE transport and connect to the MCP Server
-    active_transport = SseServerTransport("/sse/messages")
-    logging.info("Established new SSE session")
-    # Send SSE response headers to the client, preparing to start sending events
-    await send({"type": "http.response.start", "status": 200, "headers": headers})
-    try:
-        async with active_transport.connect_sse(scope, receive, send) as (read_stream, write_stream):
-            init_opts = mcp_server.create_initialization_options()
-            # Run MCP Server, passing the read/write streams to the Server
-            await mcp_server.run(read_stream, write_stream, init_opts)
-    except Exception as e:
-        logging.error(f"SSE session encountered an error: {e}")
-    finally:
-        active_transport = None
-    # SSE session ended, send an empty message to indicate completion
-    await send({"type": "http.response.body", "body": b"", "more_body": False})
-
-# JSON-RPC message handler (HTTP POST /sse/messages)
-async def messages_endpoint(scope, receive, send):
-    """Handle JSON-RPC requests sent by the client (via POST)."""
-    global active_transport
-    # Read request body data
-    body_bytes = b''
-    more_body = True
-    while more_body:
-        event = await receive()
-        if event["type"] == "http.request":
-            body_bytes += event.get("body", b'')
-            more_body = event.get("more_body", False)
-    # Parse JSON-RPC request
-    try:
-        body_str = body_bytes.decode('utf-8')
-        msg = json.loads(body_str)
-    except Exception as e:
-        logging.error(f"JSON parsing failed: {e}")
-        await send({"type": "http.response.start", "status": 400,
-                    "headers": [(b"content-type", b"text/plain")]})
-        await send({"type": "http.response.body", "body": b"Invalid JSON"})
-        return
-
-    # Only accept requests sent through an established SSE transport
-    if not active_transport:
-        await send({"type": "http.response.start", "status": 400,
-                    "headers": [(b"content-type", b"text/plain")]})
-        await send({"type": "http.response.body", "body": b"No active session"})
-        return
-
-    # Pass the POST request content to active_transport to trigger the corresponding MCP Server operation
-    try:
-        # Handle the POST message through SseServerTransport, which injects the request into the MCP session
-        await active_transport.handle_post(scope, body_bytes)
-        status = 200
-        response_body = b""
-    except Exception as e:
-        logging.error(f"Error handling POST message: {e}")
-        status = 500
-        response_body = str(e).encode('utf-8')
-    # Reply to the client with HTTP status
-    await send({"type": "http.response.start", "status": status,
-                "headers": [(b"content-type", b"text/plain")]})
-    await send({"type": "http.response.body", "body": response_body})
-
-# Simple ASGI application routing: dispatch requests to the appropriate handler based on the path and method
-async def app(scope, receive, send):
-    if scope["type"] == "http":
-        path = scope.get("path", "")
-        method = scope.get("method", "").upper()
-        if path == "/sse" and method == "GET":
-            # SSE initialization request
-            await sse_endpoint(scope, receive, send)
-        elif path == "/sse/messages" and method in ("POST", "OPTIONS"):
-            # JSON-RPC message request; handle CORS preflight OPTIONS request
-            if method == "OPTIONS":
-                # Return allowed methods
-                headers = [
-                    (b"access-control-allow-methods", b"POST, OPTIONS"),
-                    (b"access-control-allow-headers", b"Content-Type, Authorization, X-API-Key"),
-                    (b"access-control-allow-origin", b"*")
-                ]
-                await send({"type": "http.response.start", "status": 204, "headers": headers})
-                await send({"type": "http.response.body", "body": b""})
-            else:
-                await messages_endpoint(scope, receive, send)
-        else:
-            # Route not found
-            await send({"type": "http.response.start", "status": 404,
-                        "headers": [(b"content-type", b"text/plain")]})
-            await send({"type": "http.response.body", "body": b"Not Found"})
-    else:
-        # Non-HTTP event, do not process
-        return
+'''
+Below is configuration loading and VMwareManager initialization code
+'''
 
 # Parse command-line arguments and environment variables, and load configuration
 parser = argparse.ArgumentParser(description="MCP VMware ESXi Management Server")
@@ -713,8 +482,78 @@ manager = VMwareManager(config)
 if config.api_key:
     logging.info("API key authentication is enabled. Clients must call the authenticate tool to verify the key before invoking sensitive operations")
 
-# Start ASGI server to listen for MCP SSE connections
+
+
+
+'''
+Below using SSE transport with FastAPI and Starlette
+'''
+
+
+transport = SseServerTransport("/messages/")
+
+async def handle_sse(request):
+    scope = request.scope
+    # Verify API key: Retrieve from request headers 'Authorization' or 'X-API-Key'
+    headers_dict = {k.lower().decode(): v.decode() for (k, v) in scope.get("headers", [])}
+    provided_key = None
+
+    if headers_dict.get("authorization"):
+        provided_key = headers_dict.get("authorization")
+    elif headers_dict.get("x-api-key"):
+        provided_key = headers_dict.get("x-api-key")
+    if config.api_key and provided_key != f"Bearer {config.api_key}" and provided_key != config.api_key:
+        logging.info("No valid API key provided, rejecting SSE connection, provided key is %s", provided_key)
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    logging.info("Client connected to SSE endpoint")
+
+    # Prepare bidirectional streams over SSE
+    async with transport.connect_sse(
+        request.scope,
+        request.receive,
+        request._send
+    ) as (in_stream, out_stream):
+        # Run the MCP server: read JSON-RPC from in_stream, write replies to out_stream
+        await mcp._mcp_server.run(
+            in_stream,
+            out_stream,
+            mcp._mcp_server.create_initialization_options()
+        )
+
+
+#Build a small Starlette app for the two MCP endpoints
+sse_app = Starlette(
+    routes=[
+        Route("/sse", handle_sse, methods=["GET"]),
+        # Note the trailing slash to avoid 307 redirects
+        Mount("/messages/", app=transport.handle_post_message)
+    ]
+)
+
+app = FastAPI()
+app.mount("/", sse_app)
+
+API_KEY = "your-secure-api-key"
+API_KEY_X_API_HEADER_NAME = "X-API-Key"
+API_KEY_AUTHORIZATION_HEADER_NAME = "Authorization"
+
+# Dependency to validate the API key
+api_key_header = APIKeyHeader(name=API_KEY_X_API_HEADER_NAME, auto_error=False)
+if api_key_header is None:
+   api_key_auth_header = APIKeyHeader(name=API_KEY_AUTHORIZATION_HEADER_NAME, auto_error=False)
+
+async def validate_api_key(api_key: str = Depends(api_key_header)):
+    if config.api_key and config.api_key != api_key:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+# Health check endpoint
+@app.get("/health", dependencies=[Depends(validate_api_key)])
+def read_root():
+    return {"message": "MCP SSE Server is running"}
+
+
 if __name__ == "__main__":
-    # Start ASGI application using the built-in uvicorn server (listening on 0.0.0.0:8080)
+    #mcp.run(transport="sse")
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=5050)    
